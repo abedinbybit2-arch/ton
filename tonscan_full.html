@@ -1,0 +1,1025 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Tonscan – Live TON Blockchain Explorer</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.development.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.development.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet"/>
+<script>
+tailwind.config = {
+  darkMode:'class',
+  theme:{
+    extend:{
+      fontFamily:{ sans:['Inter','sans-serif'], mono:['JetBrains Mono','monospace'] },
+      colors:{ ton:{ 50:'#e8f4fd',100:'#d0e9fb',200:'#a1d3f7',300:'#5cb8f5',400:'#2ea6f4',500:'#0098ea',600:'#007ec5',700:'#005f96',800:'#003f64',900:'#001f32' } },
+      animation:{ fadeIn:'fadeIn .4s ease forwards', slideUp:'slideUp .35s ease forwards' },
+      keyframes:{
+        fadeIn:{'0%':{opacity:0,transform:'translateY(6px)'},'100%':{opacity:1,transform:'translateY(0)'}},
+        slideUp:{'0%':{opacity:0,transform:'translateY(14px)'},'100%':{opacity:1,transform:'translateY(0)'}},
+      }
+    }
+  }
+}
+</script>
+<style>
+* { box-sizing:border-box; }
+body { font-family:'Inter',sans-serif; }
+.hash { font-family:'JetBrains Mono',monospace; }
+::-webkit-scrollbar{width:4px;height:4px}
+::-webkit-scrollbar-track{background:#1e293b}
+::-webkit-scrollbar-thumb{background:#0098ea;border-radius:2px}
+.tx-row:hover{ background:rgba(0,152,234,.07); }
+.card-hover{ transition:transform .2s,box-shadow .2s; }
+.card-hover:hover{ transform:translateY(-2px); box-shadow:0 8px 24px rgba(0,152,234,.18); }
+.dropdown{ display:none; }
+.nav-group:hover .dropdown{ display:block; }
+.glow{ animation:glow 2s ease-in-out infinite; }
+@keyframes glow{0%,100%{box-shadow:0 0 4px #22c55e88}50%{box-shadow:0 0 14px #22c55ebb}}
+.chat-box{ max-height:300px;overflow-y:auto;scrollbar-width:thin; }
+.dot1,.dot2,.dot3{ display:inline-block;animation:bounce .9s ease-in-out infinite; }
+.dot2{animation-delay:.2s}.dot3{animation-delay:.4s}
+@keyframes bounce{0%,60%,100%{transform:translateY(0)}30%{transform:translateY(-5px)}}
+.tag{ display:inline-block;padding:1px 7px;border-radius:9999px;font-size:11px;font-weight:600; }
+.copy-btn:hover{ opacity:.7; }
+.hero-bg{ background:linear-gradient(135deg,#001f32 0%,#005f96 50%,#0098ea 100%); }
+</style>
+</head>
+<body class="dark bg-slate-950 text-slate-200 min-h-screen">
+<div id="root"></div>
+<script type="text/babel">
+const {useState,useEffect,useRef,useCallback} = React;
+
+// ═══════════════════════════════════════════════
+// API LAYER — all real TON data
+// ═══════════════════════════════════════════════
+const TONCENTER = 'https://toncenter.com/api/v2';
+const TONAPI    = 'https://tonapi.io/v2';
+
+const api = {
+  async masterchain() {
+    const r = await fetch(`${TONCENTER}/getMasterchainInfo`);
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.error);
+    return d.result;
+  },
+
+  async transactions(address, limit=20) {
+    const r = await fetch(`${TONCENTER}/getTransactions?address=${encodeURIComponent(address)}&limit=${limit}`);
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.error);
+    return d.result;
+  },
+
+  async addressInfo(address) {
+    const r = await fetch(`${TONCENTER}/getAddressInformation?address=${encodeURIComponent(address)}`);
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.error);
+    return d.result;
+  },
+
+  async extendedAddress(address) {
+    const r = await fetch(`${TONCENTER}/getExtendedAddressInformation?address=${encodeURIComponent(address)}`);
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.error);
+    return d.result;
+  },
+
+  async blockTransactions(wc, shard, seqno) {
+    const r = await fetch(`${TONCENTER}/getBlockTransactions?workchain=${wc}&shard=${shard}&seqno=${seqno}&count=40`);
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.error);
+    return d.result;
+  },
+
+  async tonPrice() {
+    const r = await fetch(`${TONAPI}/rates?tokens=ton&currencies=usd`);
+    const d = await r.json();
+    return d?.rates?.TON?.prices?.USD ?? null;
+  },
+
+  async jettons() {
+    const r = await fetch(`${TONAPI}/jettons?limit=10`);
+    const d = await r.json();
+    return d?.jettons ?? [];
+  },
+
+  async jettonInfo(address) {
+    const r = await fetch(`${TONAPI}/jettons/${address}`);
+    return r.json();
+  },
+
+  async nftCollections() {
+    const r = await fetch(`${TONAPI}/nfts/collections?limit=10`);
+    const d = await r.json();
+    return d?.nft_collections ?? [];
+  },
+
+  async validators() {
+    const r = await fetch(`${TONCENTER}/getValidatorSet`);
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.error);
+    return d.result;
+  },
+
+  async detectType(query) {
+    // Try address first
+    try {
+      const info = await api.addressInfo(query);
+      return { type:'address', data: info, raw: query };
+    } catch {}
+    // Try as block seqno number
+    if (/^\d+$/.test(query)) {
+      return { type:'block_seqno', seqno: parseInt(query) };
+    }
+    return { type:'unknown' };
+  }
+};
+
+// ═══════════════════════════════════════════════
+// UTILS
+// ═══════════════════════════════════════════════
+const nanoToTon = (n) => n ? (parseInt(n)/1e9).toFixed(4) : '0';
+const shortAddr = (a) => a ? a.slice(0,8)+'...'+a.slice(-6) : '—';
+const timeAgo = (ts) => {
+  if (!ts) return '';
+  const d = Math.floor(Date.now()/1000) - ts;
+  if (d<60) return `${d}s ago`;
+  if (d<3600) return `${Math.floor(d/60)}m ago`;
+  if (d<86400) return `${Math.floor(d/3600)}h ago`;
+  return `${Math.floor(d/86400)}d ago`;
+};
+const copy = (t) => { try{navigator.clipboard.writeText(t)}catch{} };
+const fmt = (n) => n ? Number(n).toLocaleString() : '—';
+
+function CopyBtn({text}) {
+  const [copied,setCopied] = useState(false);
+  return (
+    <button className="copy-btn ml-1 text-slate-500 hover:text-ton-400 text-xs transition-colors"
+      onClick={e=>{e.stopPropagation();copy(text);setCopied(true);setTimeout(()=>setCopied(false),1500)}}>
+      {copied ? '✅':'📋'}
+    </button>
+  );
+}
+
+function Spinner() {
+  return <div className="flex justify-center py-10"><div className="w-8 h-8 border-2 border-ton-500 border-t-transparent rounded-full animate-spin"/></div>;
+}
+
+function EmptyState({msg='No data'}) {
+  return <div className="py-12 text-center text-slate-500"><div className="text-4xl mb-2">📭</div><p className="text-sm">{msg}</p></div>;
+}
+
+function ErrBanner({msg}) {
+  return (
+    <div className="mx-4 my-2 bg-red-900/30 border border-red-700/40 rounded-xl px-4 py-3 text-xs text-red-300 flex items-center gap-2">
+      <span>⚠️</span>{msg}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════
+// TOP BAR
+// ═══════════════════════════════════════════════
+function TopBar({dark,setDark}) {
+  const [now,setNow] = useState(new Date());
+  useEffect(()=>{ const i=setInterval(()=>setNow(new Date()),1000); return ()=>clearInterval(i); },[]);
+  return (
+    <div className="bg-black/50 border-b border-slate-800 text-xs text-slate-500 py-1.5 px-4">
+      <div className="max-w-7xl mx-auto flex justify-between items-center">
+        <div className="flex gap-4">
+          <span className="text-slate-400 font-medium">🌐 Mainnet</span>
+          <a href="https://toncenter.com/api/v2" target="_blank" className="hover:text-ton-400 transition-colors">TonCenter API ↗</a>
+          <a href="https://tonapi.io" target="_blank" className="hover:text-ton-400 transition-colors">TON API ↗</a>
+        </div>
+        <div className="flex items-center gap-4">
+          <span className="hidden md:block">{now.toUTCString().slice(0,-4)} UTC</span>
+          <div className="flex items-center gap-1.5">
+            <div className="w-1.5 h-1.5 rounded-full bg-green-400 glow"/>
+            <span className="text-green-400">Live</span>
+          </div>
+          <button onClick={()=>setDark(!dark)} className="hover:text-ton-400 text-base transition-colors">
+            {dark?'☀️':'🌙'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════
+// HEADER + SEARCH
+// ═══════════════════════════════════════════════
+function Header({onSearch}) {
+  const [q,setQ] = useState('');
+  const go = () => { if(q.trim()) onSearch(q.trim()); };
+  return (
+    <header className="hero-bg py-8 md:py-12 relative overflow-hidden">
+      <div className="absolute inset-0 opacity-10" style={{background:'radial-gradient(ellipse at 20% 50%,#00c6ff44,transparent 60%),radial-gradient(ellipse at 80% 20%,#0098ea44,transparent 50%)'}}/>
+      <div className="max-w-7xl mx-auto px-4 relative z-10">
+        <div className="flex items-center gap-3 mb-6">
+          <span className="text-4xl">💎</span>
+          <div>
+            <h1 className="text-white font-bold text-2xl tracking-tight">Tonscan</h1>
+            <p className="text-blue-200 text-sm">TON Blockchain Explorer — 100% Live Data</p>
+          </div>
+        </div>
+        <div className="max-w-2xl">
+          <div className="flex gap-2">
+            <input value={q} onChange={e=>setQ(e.target.value)} onKeyDown={e=>e.key==='Enter'&&go()}
+              placeholder="Search: address (EQ...) / block seqno / validator..."
+              className="flex-1 bg-white/10 border border-white/20 text-white placeholder-white/40 rounded-xl px-4 py-3 text-sm outline-none focus:bg-white/15 focus:border-white/40 transition-all hash"/>
+            <button onClick={go} className="bg-white text-ton-700 font-semibold px-6 py-3 rounded-xl hover:bg-ton-50 transition-colors text-sm flex-shrink-0">
+              Search
+            </button>
+          </div>
+          <p className="text-white/30 text-xs mt-2">Enter a TON wallet address to see balance & transactions</p>
+        </div>
+      </div>
+    </header>
+  );
+}
+
+// ═══════════════════════════════════════════════
+// NAVBAR
+// ═══════════════════════════════════════════════
+function Navbar({activeTab,setActiveTab}) {
+  const tabs = [
+    {id:'overview',icon:'🏠',label:'Overview'},
+    {id:'transactions',icon:'🔄',label:'Transactions'},
+    {id:'blocks',icon:'📦',label:'Blocks'},
+    {id:'jettons',icon:'🪙',label:'Jettons'},
+    {id:'nfts',icon:'🖼️',label:'NFTs'},
+    {id:'validators',icon:'🏛️',label:'Validators'},
+  ];
+  return (
+    <nav className="bg-slate-900 border-b border-slate-700/50 sticky top-0 z-50 shadow-lg">
+      <div className="max-w-7xl mx-auto px-4 flex items-stretch overflow-x-auto">
+        {tabs.map(t=>(
+          <button key={t.id} onClick={()=>setActiveTab(t.id)}
+            className={`flex items-center gap-1.5 px-4 py-3.5 text-sm font-medium border-b-2 transition-all whitespace-nowrap flex-shrink-0
+              ${activeTab===t.id?'border-ton-500 text-ton-400':'border-transparent text-slate-400 hover:text-slate-200 hover:border-slate-500'}`}>
+            <span>{t.icon}</span><span>{t.label}</span>
+          </button>
+        ))}
+        <div className="ml-auto flex items-center px-3 flex-shrink-0">
+          <span className="text-xs text-slate-500">Data: toncenter.com + tonapi.io</span>
+        </div>
+      </div>
+    </nav>
+  );
+}
+
+// ═══════════════════════════════════════════════
+// OVERVIEW TAB
+// ═══════════════════════════════════════════════
+function Overview({price,block}) {
+  const stats = [
+    {label:'TON Price',value:price?`$${parseFloat(price).toFixed(4)}`:'...',icon:'💎',live:true,color:'text-ton-400'},
+    {label:'Latest Block',value:block?.last?.seqno?`#${fmt(block.last.seqno)}`:'...',icon:'📦',live:true,color:'text-green-400'},
+    {label:'Workchain',value:block?.last?.workchain??'...',icon:'⛓️',color:'text-slate-300'},
+    {label:'Shard',value:block?.last?.shard?block.last.shard.slice(0,10)+'...':'...',icon:'🔗',color:'text-slate-300'},
+    {label:'Root Hash',value:block?.last?.root_hash?block.last.root_hash.slice(0,12)+'...':'...',icon:'🔒',color:'text-slate-300'},
+    {label:'File Hash',value:block?.last?.file_hash?block.last.file_hash.slice(0,12)+'...':'...',icon:'📄',color:'text-slate-300'},
+  ];
+  return (
+    <div>
+      <h2 className="text-base font-semibold text-slate-300 mb-4">📊 Network Overview</h2>
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mb-6">
+        {stats.map((s,i)=>(
+          <div key={i} className="card-hover bg-slate-800 border border-slate-700/50 rounded-xl p-4 cursor-pointer">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xl">{s.icon}</span>
+              {s.live&&<div className="flex items-center gap-1"><div className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse"/><span className="text-xs text-green-400">Live</span></div>}
+            </div>
+            <div className={`font-bold text-lg hash truncate ${s.color}`}>{s.value}</div>
+            <div className="text-xs text-slate-400 mt-0.5">{s.label}</div>
+          </div>
+        ))}
+      </div>
+      {block?.last && (
+        <div className="bg-slate-800 border border-slate-700/50 rounded-xl p-4">
+          <h3 className="font-semibold text-sm mb-3 flex items-center gap-2"><span>📦</span> Latest Masterchain Block</h3>
+          {[
+            ['Seqno', fmt(block.last.seqno)],
+            ['Workchain', block.last.workchain],
+            ['Shard', block.last.shard],
+            ['Root Hash', block.last.root_hash],
+            ['File Hash', block.last.file_hash],
+          ].map(([k,v])=>(
+            <div key={k} className="flex items-start justify-between py-2 border-b border-slate-700/40 last:border-0 gap-4">
+              <span className="text-xs text-slate-400 flex-shrink-0 w-24">{k}</span>
+              <span className="hash text-xs text-slate-200 text-right break-all flex items-center">
+                {v??'—'}<CopyBtn text={String(v??'')}/>
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════
+// TRANSACTIONS TAB
+// ═══════════════════════════════════════════════
+
+// Well-known active TON addresses to show transactions
+const KNOWN_ADDRS = [
+  'EQD-LkpmPTKdq1nHSvRxPJjGIBRIcT1N7wH_Qjb9uulBGqJD', // active address
+  'EQCkR1cGmnsE45N4K0otPl5EnxnRakmGqeJUNua5fkWhales',
+  'EQBlqsm144Dq6SjbPI4jjZvA1hqTIP3CvHovbIfW_t-SCALE',
+];
+
+function TransactionsTab() {
+  const [txs,setTxs] = useState([]);
+  const [loading,setLoading] = useState(true);
+  const [err,setErr] = useState('');
+  const [addr,setAddr] = useState('');
+  const [inputAddr,setInputAddr] = useState('');
+  const [lastUpdate,setLastUpdate] = useState(null);
+
+  const load = useCallback(async(a)=>{
+    setLoading(true); setErr('');
+    // Try addresses until we get transactions
+    const toTry = a ? [a] : KNOWN_ADDRS;
+    let found = false;
+    for(const address of toTry){
+      try{
+        const data = await api.transactions(address, 25);
+        if(data?.length){
+          setTxs(data);
+          setAddr(address);
+          setLastUpdate(new Date());
+          found = true;
+          break;
+        }
+      }catch(e){}
+    }
+    if(!found) setErr('Could not fetch transactions. API rate limit may be reached. Try again in a moment.');
+    setLoading(false);
+  },[]);
+
+  useEffect(()=>{ load(); },[]);
+
+  return (
+    <div>
+      <div className="flex flex-col md:flex-row gap-3 mb-4">
+        <input value={inputAddr} onChange={e=>setInputAddr(e.target.value)}
+          placeholder="Enter TON address to see its transactions (EQ...)"
+          className="flex-1 bg-slate-800 border border-slate-700 rounded-xl px-4 py-2.5 text-sm hash text-slate-200 outline-none focus:border-ton-500 transition-colors"/>
+        <button onClick={()=>load(inputAddr||undefined)}
+          className="bg-ton-600 hover:bg-ton-500 text-white px-5 py-2.5 rounded-xl text-sm font-medium transition-colors flex-shrink-0">
+          Load Transactions
+        </button>
+        <button onClick={()=>load(addr||undefined)}
+          className="bg-slate-700 hover:bg-slate-600 text-slate-200 px-4 py-2.5 rounded-xl text-sm transition-colors flex-shrink-0 flex items-center gap-2">
+          <span className={loading?'animate-spin':''}>🔄</span> Refresh
+        </button>
+      </div>
+
+      {addr && (
+        <div className="mb-3 flex items-center gap-2 text-xs text-slate-400 bg-slate-800/50 rounded-lg px-3 py-2">
+          <span>📍 Showing txs for:</span>
+          <span className="hash text-ton-400 truncate">{addr}</span>
+          <CopyBtn text={addr}/>
+          {lastUpdate && <span className="ml-auto text-slate-500">Updated {timeAgo(Math.floor(lastUpdate/1000))}</span>}
+        </div>
+      )}
+
+      {err && <ErrBanner msg={err}/>}
+
+      <div className="bg-slate-800 border border-slate-700/50 rounded-xl overflow-hidden">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-slate-700/50">
+          <div className="flex items-center gap-2">
+            <span>🔄</span>
+            <span className="font-semibold text-sm">Transactions</span>
+            {!loading&&txs.length>0&&<span className="tag bg-ton-900/50 text-ton-400">{txs.length}</span>}
+          </div>
+          {!loading&&txs.length>0&&<div className="flex items-center gap-1"><div className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse"/><span className="text-xs text-green-400">Real data</span></div>}
+        </div>
+
+        {loading ? <Spinner/> : err && !txs.length ? <EmptyState msg="No transactions loaded"/> : (
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="text-xs text-slate-500 border-b border-slate-700/50">
+                  <th className="px-4 py-2 text-left">Hash</th>
+                  <th className="px-4 py-2 text-left">From</th>
+                  <th className="px-4 py-2 text-left">To</th>
+                  <th className="px-4 py-2 text-right">Amount</th>
+                  <th className="px-4 py-2 text-right">Fee</th>
+                  <th className="px-4 py-2 text-right">Time</th>
+                </tr>
+              </thead>
+              <tbody>
+                {txs.map((tx,i)=>{
+                  const msg = tx.in_msg;
+                  const out = tx.out_msgs?.[0];
+                  const val = msg?.value||out?.value||0;
+                  const hash = tx.transaction_id?.hash||'';
+                  return (
+                    <tr key={hash+i} className="tx-row border-b border-slate-700/30 transition-colors"
+                      style={{animation:`fadeIn .4s ease ${i*.025}s both`}}>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-2">
+                          <div className="w-2 h-2 rounded-full bg-green-500 flex-shrink-0"/>
+                          <span className="hash text-xs text-ton-400 cursor-pointer hover:underline" title={hash}>
+                            {hash?hash.slice(0,10)+'...':'—'}
+                          </span>
+                          {hash&&<CopyBtn text={hash}/>}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className="hash text-xs text-slate-400 truncate block max-w-28" title={msg?.source}>{msg?.source?shortAddr(msg.source):'—'}</span>
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className="hash text-xs text-slate-400 truncate block max-w-28" title={msg?.destination||out?.destination}>
+                          {msg?.destination?shortAddr(msg.destination):out?.destination?shortAddr(out.destination):'—'}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <span className="font-semibold text-sm text-slate-200">{nanoToTon(val)}</span>
+                        <span className="text-xs text-slate-500 ml-1">TON</span>
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <span className="hash text-xs text-slate-500">{nanoToTon(tx.fee)}</span>
+                      </td>
+                      <td className="px-4 py-3 text-right text-xs text-slate-500">{timeAgo(tx.utime)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════
+// BLOCKS TAB
+// ═══════════════════════════════════════════════
+function BlocksTab() {
+  const [info,setInfo] = useState(null);
+  const [blockTxs,setBlockTxs] = useState([]);
+  const [loading,setLoading] = useState(true);
+  const [txLoading,setTxLoading] = useState(false);
+  const [err,setErr] = useState('');
+
+  const load = async()=>{
+    setLoading(true); setErr('');
+    try{
+      const data = await api.masterchain();
+      setInfo(data);
+    }catch(e){ setErr('Failed to fetch block info: '+e.message); }
+    setLoading(false);
+  };
+
+  const loadBlockTxs = async()=>{
+    if(!info?.last) return;
+    setTxLoading(true);
+    try{
+      const data = await api.blockTransactions(info.last.workchain, info.last.shard, info.last.seqno);
+      setBlockTxs(data?.transactions||[]);
+    }catch(e){ setErr('Failed to fetch block transactions: '+e.message); }
+    setTxLoading(false);
+  };
+
+  useEffect(()=>{ load(); },[]);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex gap-2">
+        <button onClick={load} className="bg-ton-600 hover:bg-ton-500 text-white px-4 py-2 rounded-xl text-sm font-medium transition-colors flex items-center gap-2">
+          <span className={loading?'animate-spin':''}>🔄</span> Refresh Block
+        </button>
+        {info?.last && (
+          <button onClick={loadBlockTxs} className="bg-slate-700 hover:bg-slate-600 text-slate-200 px-4 py-2 rounded-xl text-sm transition-colors flex items-center gap-2">
+            {txLoading?<span className="animate-spin">🔄</span>:'📋'} Load Block Transactions
+          </button>
+        )}
+      </div>
+      {err&&<ErrBanner msg={err}/>}
+      {loading ? <Spinner/> : info && (
+        <div className="grid md:grid-cols-2 gap-4">
+          {/* Last block */}
+          <div className="bg-slate-800 border border-slate-700/50 rounded-xl overflow-hidden">
+            <div className="px-4 py-3 border-b border-slate-700/50 bg-slate-700/30">
+              <span className="font-semibold text-sm flex items-center gap-2">📦 Latest Block <span className="tag bg-green-900/40 text-green-400">Live</span></span>
+            </div>
+            <div className="p-4 space-y-1">
+              {[
+                ['Seqno', fmt(info.last?.seqno), info.last?.seqno],
+                ['Workchain', info.last?.workchain, null],
+                ['Shard', info.last?.shard, info.last?.shard],
+                ['Root Hash', info.last?.root_hash, info.last?.root_hash],
+                ['File Hash', info.last?.file_hash, info.last?.file_hash],
+              ].map(([k,v,cp])=>(
+                <div key={k} className="flex items-start justify-between py-1.5 border-b border-slate-700/30 last:border-0 gap-3">
+                  <span className="text-xs text-slate-400 flex-shrink-0 w-24">{k}</span>
+                  <span className="hash text-xs text-slate-200 text-right break-all flex items-center gap-1">
+                    {v??'—'}{cp&&<CopyBtn text={String(cp)}/>}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+          {/* Initial block */}
+          <div className="bg-slate-800 border border-slate-700/50 rounded-xl overflow-hidden">
+            <div className="px-4 py-3 border-b border-slate-700/50 bg-slate-700/30">
+              <span className="font-semibold text-sm">🏁 Initial Block</span>
+            </div>
+            <div className="p-4 space-y-1">
+              {[
+                ['Seqno', fmt(info.init?.seqno)],
+                ['Workchain', info.init?.workchain],
+                ['Shard', info.init?.shard],
+                ['Root Hash', info.init?.root_hash],
+                ['File Hash', info.init?.file_hash],
+              ].map(([k,v])=>(
+                <div key={k} className="flex items-start justify-between py-1.5 border-b border-slate-700/30 last:border-0 gap-3">
+                  <span className="text-xs text-slate-400 flex-shrink-0 w-24">{k}</span>
+                  <span className="hash text-xs text-slate-200 text-right break-all">{v??'—'}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Block transactions */}
+      {blockTxs.length>0 && (
+        <div className="bg-slate-800 border border-slate-700/50 rounded-xl overflow-hidden">
+          <div className="px-4 py-3 border-b border-slate-700/50 flex items-center justify-between">
+            <span className="font-semibold text-sm">🔄 Block #{fmt(info?.last?.seqno)} Transactions</span>
+            <span className="tag bg-ton-900/50 text-ton-400">{blockTxs.length}</span>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead><tr className="text-xs text-slate-500 border-b border-slate-700/50">
+                <th className="px-4 py-2 text-left">Account</th>
+                <th className="px-4 py-2 text-right">LT</th>
+              </tr></thead>
+              <tbody>
+                {blockTxs.slice(0,20).map((t,i)=>(
+                  <tr key={i} className="tx-row border-b border-slate-700/30">
+                    <td className="px-4 py-2.5"><span className="hash text-xs text-ton-400">{shortAddr(t.account)}</span><CopyBtn text={t.account||''}/></td>
+                    <td className="px-4 py-2.5 text-right"><span className="hash text-xs text-slate-400">{t.lt}</span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════
+// JETTONS TAB
+// ═══════════════════════════════════════════════
+function JettonsTab() {
+  const [jettons,setJettons] = useState([]);
+  const [loading,setLoading] = useState(true);
+  const [err,setErr] = useState('');
+
+  useEffect(()=>{
+    api.jettons()
+      .then(d=>setJettons(d))
+      .catch(e=>setErr('Could not load jettons: '+e.message))
+      .finally(()=>setLoading(false));
+  },[]);
+
+  return (
+    <div>
+      {err&&<ErrBanner msg={err}/>}
+      <div className="bg-slate-800 border border-slate-700/50 rounded-xl overflow-hidden">
+        <div className="px-4 py-3 border-b border-slate-700/50 flex items-center justify-between">
+          <span className="font-semibold text-sm flex items-center gap-2">🪙 Top Jettons <span className="tag bg-ton-900/50 text-ton-400">Real</span></span>
+        </div>
+        {loading ? <Spinner/> : jettons.length===0 ? <EmptyState msg="No jettons loaded"/> : (
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead><tr className="text-xs text-slate-500 border-b border-slate-700/50">
+                <th className="px-4 py-2 text-left">#</th>
+                <th className="px-4 py-2 text-left">Token</th>
+                <th className="px-4 py-2 text-right">Symbol</th>
+                <th className="px-4 py-2 text-right">Decimals</th>
+                <th className="px-4 py-2 text-right">Total Supply</th>
+                <th className="px-4 py-2 text-right">Holders</th>
+              </tr></thead>
+              <tbody>
+                {jettons.map((j,i)=>(
+                  <tr key={j.address||i} className="tx-row border-b border-slate-700/30" style={{animation:`fadeIn .4s ease ${i*.04}s both`}}>
+                    <td className="px-4 py-3 text-xs text-slate-500">{i+1}</td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-2">
+                        {j.metadata?.image
+                          ? <img src={j.metadata.image} className="w-7 h-7 rounded-full flex-shrink-0" onError={e=>e.target.style.display='none'}/>
+                          : <div className="w-7 h-7 rounded-full bg-ton-700 flex items-center justify-center text-xs font-bold flex-shrink-0 text-white">{(j.metadata?.symbol||'?')[0]}</div>
+                        }
+                        <div>
+                          <div className="font-medium text-sm text-slate-200">{j.metadata?.name||'Unknown'}</div>
+                          <div className="hash text-xs text-slate-500 max-w-32 truncate">{shortAddr(j.address)}</div>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="px-4 py-3 text-right"><span className="tag bg-slate-700 text-slate-300">{j.metadata?.symbol||'—'}</span></td>
+                    <td className="px-4 py-3 text-right text-xs text-slate-400">{j.metadata?.decimals??9}</td>
+                    <td className="px-4 py-3 text-right text-xs text-slate-400 hash">{j.total_supply?nanoToTon(j.total_supply):'—'}</td>
+                    <td className="px-4 py-3 text-right text-xs text-slate-400">{j.holders_count?fmt(j.holders_count):'—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════
+// NFTs TAB
+// ═══════════════════════════════════════════════
+function NFTsTab() {
+  const [colls,setColls] = useState([]);
+  const [loading,setLoading] = useState(true);
+  const [err,setErr] = useState('');
+
+  useEffect(()=>{
+    api.nftCollections()
+      .then(d=>setColls(d))
+      .catch(e=>setErr('Could not load NFT collections: '+e.message))
+      .finally(()=>setLoading(false));
+  },[]);
+
+  return (
+    <div>
+      {err&&<ErrBanner msg={err}/>}
+      <div className="bg-slate-800 border border-slate-700/50 rounded-xl overflow-hidden">
+        <div className="px-4 py-3 border-b border-slate-700/50">
+          <span className="font-semibold text-sm flex items-center gap-2">🖼️ NFT Collections <span className="tag bg-ton-900/50 text-ton-400">Real</span></span>
+        </div>
+        {loading ? <Spinner/> : colls.length===0 ? <EmptyState msg="No collections loaded"/> : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 p-4">
+            {colls.map((c,i)=>(
+              <div key={c.address||i} className="card-hover bg-slate-700/40 border border-slate-700/50 rounded-xl p-4 cursor-pointer"
+                style={{animation:`fadeIn .4s ease ${i*.05}s both`}}>
+                <div className="flex items-center gap-3 mb-3">
+                  {c.previews?.[0]?.url
+                    ? <img src={c.previews[0].url} className="w-12 h-12 rounded-lg object-cover flex-shrink-0" onError={e=>e.target.style.display='none'}/>
+                    : <div className="w-12 h-12 rounded-lg bg-ton-800 flex items-center justify-center text-2xl flex-shrink-0">🖼️</div>
+                  }
+                  <div className="min-w-0">
+                    <div className="font-semibold text-sm text-slate-200 truncate">{c.metadata?.name||'Unnamed'}</div>
+                    <div className="hash text-xs text-slate-500 truncate">{shortAddr(c.address)}</div>
+                  </div>
+                </div>
+                {c.metadata?.description && (
+                  <p className="text-xs text-slate-400 line-clamp-2 mb-2">{c.metadata.description}</p>
+                )}
+                <div className="flex justify-between text-xs">
+                  <span className="text-slate-500">Items</span>
+                  <span className="text-slate-300 font-medium">{fmt(c.next_item_index)||'—'}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════
+// VALIDATORS TAB
+// ═══════════════════════════════════════════════
+function ValidatorsTab() {
+  const [data,setData] = useState(null);
+  const [loading,setLoading] = useState(true);
+  const [err,setErr] = useState('');
+
+  useEffect(()=>{
+    api.validators()
+      .then(d=>setData(d))
+      .catch(e=>setErr('Could not load validators: '+e.message))
+      .finally(()=>setLoading(false));
+  },[]);
+
+  const list = data?.validators?.list?.map((_,k)=>data.validators.list[k])||[];
+  return (
+    <div className="space-y-4">
+      {err&&<ErrBanner msg={err}/>}
+      {data && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          {[
+            ['Total', fmt(data.validators?.total),'🏛️'],
+            ['Main', fmt(data.validators?.main),'⭐'],
+            ['Elect At', data.timings?.validators_elected_for?`${data.timings.validators_elected_for}s`:'—','⏰'],
+            ['Stake Held', data.timings?.stake_held_for?`${data.timings.stake_held_for}s`:'—','🔒'],
+          ].map(([l,v,ic])=>(
+            <div key={l} className="card-hover bg-slate-800 border border-slate-700/50 rounded-xl p-4">
+              <span className="text-2xl">{ic}</span>
+              <div className="font-bold text-xl text-slate-200 mt-1">{v}</div>
+              <div className="text-xs text-slate-400">{l}</div>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="bg-slate-800 border border-slate-700/50 rounded-xl overflow-hidden">
+        <div className="px-4 py-3 border-b border-slate-700/50 flex items-center justify-between">
+          <span className="font-semibold text-sm flex items-center gap-2">🏛️ Validators <span className="tag bg-ton-900/50 text-ton-400">Real</span></span>
+          {list.length>0&&<span className="tag bg-slate-700 text-slate-300">{list.length}</span>}
+        </div>
+        {loading ? <Spinner/> : list.length===0 ? <EmptyState msg="No validator data"/> : (
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead><tr className="text-xs text-slate-500 border-b border-slate-700/50">
+                <th className="px-4 py-2 text-left">#</th>
+                <th className="px-4 py-2 text-left">Public Key</th>
+                <th className="px-4 py-2 text-right">Weight</th>
+                <th className="px-4 py-2 text-right">ADNL</th>
+              </tr></thead>
+              <tbody>
+                {list.slice(0,30).map((v,i)=>(
+                  <tr key={v['@type']+i} className="tx-row border-b border-slate-700/30" style={{animation:`fadeIn .3s ease ${i*.02}s both`}}>
+                    <td className="px-4 py-2.5 text-xs text-slate-500">{i+1}</td>
+                    <td className="px-4 py-2.5"><span className="hash text-xs text-ton-400">{v.public_key?v.public_key.slice(0,20)+'...':'—'}</span></td>
+                    <td className="px-4 py-2.5 text-right text-xs text-slate-300">{v.weight}</td>
+                    <td className="px-4 py-2.5 text-right"><span className="hash text-xs text-slate-500">{v.adnl_addr?v.adnl_addr.slice(0,12)+'...':'—'}</span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════
+// SEARCH RESULT MODAL
+// ═══════════════════════════════════════════════
+function SearchModal({query,onClose}) {
+  const [result,setResult] = useState(null);
+  const [txs,setTxs] = useState([]);
+  const [loading,setLoading] = useState(true);
+  const [err,setErr] = useState('');
+
+  useEffect(()=>{
+    (async()=>{
+      setLoading(true); setErr('');
+      try{
+        const info = await api.addressInfo(query);
+        setResult(info);
+        try{
+          const t = await api.transactions(query,15);
+          setTxs(t||[]);
+        }catch{}
+      }catch(e){
+        setErr('Address not found or invalid. Make sure you entered a valid TON address (EQ... or UQ...)');
+      }
+      setLoading(false);
+    })();
+  },[query]);
+
+  return (
+    <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-start justify-center pt-12 px-4 overflow-y-auto" onClick={onClose}>
+      <div className="bg-slate-800 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-2xl mb-8 animate-slideUp" onClick={e=>e.stopPropagation()}>
+        <div className="flex items-center justify-between p-4 border-b border-slate-700">
+          <h3 className="font-semibold text-sm flex items-center gap-2">🔍 Address Info</h3>
+          <button onClick={onClose} className="text-slate-400 hover:text-white text-xl leading-none w-7 h-7 flex items-center justify-center">×</button>
+        </div>
+        <div className="p-4">
+          <div className="hash text-xs bg-slate-900 rounded-lg px-3 py-2 text-ton-400 break-all mb-4 flex items-center">
+            {query}<CopyBtn text={query}/>
+          </div>
+          {loading ? <Spinner/> : err ? (
+            <div className="text-center py-6"><div className="text-3xl mb-2">❌</div><p className="text-sm text-red-400">{err}</p></div>
+          ) : result && (
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-3">
+                <div className="bg-slate-700/40 rounded-xl p-3">
+                  <div className="text-xs text-slate-400 mb-1">Balance</div>
+                  <div className="font-bold text-lg text-ton-400">{nanoToTon(result.balance)} TON</div>
+                </div>
+                <div className="bg-slate-700/40 rounded-xl p-3">
+                  <div className="text-xs text-slate-400 mb-1">State</div>
+                  <div className={`font-bold text-sm ${result.state==='active'?'text-green-400':result.state==='uninitialized'?'text-yellow-400':'text-slate-300'}`}>
+                    {result.state||'—'}
+                  </div>
+                </div>
+              </div>
+              {[
+                ['Address', result.address],
+                ['Last Tx LT', result.last_transaction_id?.lt],
+                ['Last Tx Hash', result.last_transaction_id?.hash],
+                ['Has Code', result.code?'Yes (Contract)':'No (Wallet)'],
+              ].map(([k,v])=> v ? (
+                <div key={k} className="flex items-start justify-between py-2 border-b border-slate-700/30 last:border-0 gap-4">
+                  <span className="text-xs text-slate-400 flex-shrink-0 w-28">{k}</span>
+                  <span className="hash text-xs text-slate-200 text-right break-all flex items-center gap-1">{v}<CopyBtn text={String(v)}/></span>
+                </div>
+              ) : null)}
+
+              {txs.length>0 && (
+                <div className="mt-4">
+                  <h4 className="font-semibold text-sm mb-2 text-slate-300">Recent Transactions ({txs.length})</h4>
+                  <div className="space-y-1 max-h-48 overflow-y-auto">
+                    {txs.map((tx,i)=>{
+                      const msg=tx.in_msg; const val=msg?.value||tx.out_msgs?.[0]?.value||0;
+                      return (
+                        <div key={i} className="flex items-center justify-between bg-slate-700/30 rounded-lg px-3 py-2 text-xs">
+                          <span className="hash text-ton-400">{tx.transaction_id?.hash?.slice(0,12)||'—'}...</span>
+                          <span className="text-slate-200 font-medium">{nanoToTon(val)} TON</span>
+                          <span className="text-slate-500">{timeAgo(tx.utime)}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════
+// AI CHATBOT
+// ═══════════════════════════════════════════════
+function AIChatbot() {
+  const [open,setOpen] = useState(false);
+  const [msgs,setMsgs] = useState([
+    {role:'assistant',content:"Hi! I'm Tonscan AI. Ask me anything about TON blockchain, transactions, wallets, jettons, validators or how to use this explorer! 💎"}
+  ]);
+  const [input,setInput] = useState('');
+  const [loading,setLoading] = useState(false);
+  const ref = useRef(null);
+  useEffect(()=>{ if(ref.current) ref.current.scrollTop=ref.current.scrollHeight; },[msgs]);
+
+  const send = async()=>{
+    if(!input.trim()||loading) return;
+    const q=input.trim(); setInput('');
+    setMsgs(p=>[...p,{role:'user',content:q}]);
+    setLoading(true);
+    try{
+      const r = await fetch('https://api.anthropic.com/v1/messages',{
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({
+          model:'claude-sonnet-4-20250514', max_tokens:1000,
+          system:`You are an expert TON blockchain assistant for Tonscan — a live TON Blockchain Explorer.
+Answer questions about TON blockchain, wallet addresses, transactions, blocks, validators, jettons (TIP-74 tokens), NFTs, staking, DApps, and how to use the explorer.
+Data is pulled live from toncenter.com/api/v2 and tonapi.io. Be concise, friendly, and accurate.`,
+          messages: msgs.slice(1).concat([{role:'user',content:q}])
+        })
+      });
+      const d = await r.json();
+      setMsgs(p=>[...p,{role:'assistant',content:d.content?.[0]?.text||'Sorry, try again.'}]);
+    }catch{ setMsgs(p=>[...p,{role:'assistant',content:'Connection error. Please try again.'}]); }
+    setLoading(false);
+  };
+
+  return (
+    <>
+      <button onClick={()=>setOpen(!open)}
+        className="fixed bottom-6 right-6 w-14 h-14 bg-ton-500 hover:bg-ton-600 text-white rounded-full shadow-2xl flex items-center justify-center text-2xl z-50 transition-all hover:scale-110 ring-4 ring-ton-400/30">
+        {open?'✕':'🤖'}
+      </button>
+      {open&&(
+        <div className="fixed bottom-24 right-6 w-80 bg-slate-800 border border-slate-700 rounded-2xl shadow-2xl z-50 overflow-hidden animate-slideUp">
+          <div className="bg-gradient-to-r from-ton-800 to-ton-600 px-4 py-3 flex items-center gap-3">
+            <div className="w-8 h-8 bg-white/20 rounded-full flex items-center justify-center">💎</div>
+            <div>
+              <p className="text-white font-semibold text-sm">TON AI Assistant</p>
+              <div className="flex items-center gap-1"><div className="w-1.5 h-1.5 bg-green-400 rounded-full animate-pulse"/><p className="text-ton-100 text-xs">Powered by Claude</p></div>
+            </div>
+          </div>
+          <div ref={ref} className="chat-box p-3 flex flex-col gap-3 min-h-40 max-h-72 overflow-y-auto">
+            {msgs.map((m,i)=>(
+              <div key={i} className={`flex ${m.role==='user'?'justify-end':'justify-start'}`}>
+                <div className={`max-w-xs rounded-2xl px-3 py-2 text-xs leading-relaxed
+                  ${m.role==='user'?'bg-ton-600 text-white rounded-br-sm':'bg-slate-700 text-slate-200 rounded-bl-sm'}`}>
+                  {m.content}
+                </div>
+              </div>
+            ))}
+            {loading&&<div className="flex justify-start"><div className="bg-slate-700 rounded-2xl rounded-bl-sm px-4 py-2 text-sm text-slate-400"><span className="dot1">.</span><span className="dot2">.</span><span className="dot3">.</span></div></div>}
+          </div>
+          <div className="px-3 pb-2 flex gap-1 flex-wrap">
+            {['What is TON?','How to check wallet?','What are Jettons?','How staking works?'].map((q,i)=>(
+              <button key={i} onClick={()=>setInput(q)}
+                className="text-xs bg-slate-700 hover:bg-slate-600 text-ton-400 px-2 py-1 rounded-full border border-slate-600 transition-colors">{q}</button>
+            ))}
+          </div>
+          <div className="border-t border-slate-700 p-2 flex gap-2">
+            <input value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>e.key==='Enter'&&send()}
+              placeholder="Ask about TON..."
+              className="flex-1 text-xs px-3 py-2 rounded-xl border border-slate-600 bg-slate-700 text-slate-200 outline-none focus:border-ton-400 transition-colors"/>
+            <button onClick={send} disabled={loading}
+              className="bg-ton-500 hover:bg-ton-600 disabled:opacity-50 text-white w-8 h-8 rounded-xl flex items-center justify-center transition-colors flex-shrink-0">➤</button>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+// ═══════════════════════════════════════════════
+// FOOTER
+// ═══════════════════════════════════════════════
+function Footer() {
+  return (
+    <footer className="bg-slate-950 border-t border-slate-800 text-slate-500 mt-10">
+      <div className="max-w-7xl mx-auto px-4 py-8 grid grid-cols-1 md:grid-cols-4 gap-8">
+        <div>
+          <div className="flex items-center gap-2 mb-3"><span className="text-2xl">💎</span><span className="text-white font-bold text-lg">Tonscan</span></div>
+          <p className="text-xs leading-relaxed">100% live TON Blockchain Explorer. Data from TonCenter API + TON API.</p>
+        </div>
+        {[
+          {title:'Explorer',links:['Transactions','Blocks','Validators','Jettons','NFTs']},
+          {title:'Data Sources',links:['toncenter.com/api/v2','tonapi.io/v2','TON Docs ↗','GitHub ↗']},
+          {title:'Contact',links:['Telegram ↗','Twitter ↗','API Docs ↗','Status Page']},
+        ].map((c,i)=>(
+          <div key={i}>
+            <h4 className="text-slate-300 font-semibold text-sm mb-3">{c.title}</h4>
+            <ul className="space-y-1.5">{c.links.map(l=><li key={l}><a href="#" className="text-xs hover:text-ton-400 transition-colors">› {l}</a></li>)}</ul>
+          </div>
+        ))}
+      </div>
+      <div className="border-t border-slate-800 py-3 px-4 flex flex-col md:flex-row justify-between items-center gap-2 text-xs max-w-7xl mx-auto">
+        <span>© 2024 Tonscan Clone — Live data from toncenter.com + tonapi.io</span>
+        <div className="flex items-center gap-1.5"><div className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse"/><span className="text-green-400">All systems live</span></div>
+      </div>
+    </footer>
+  );
+}
+
+// ═══════════════════════════════════════════════
+// APP
+// ═══════════════════════════════════════════════
+function App() {
+  const [dark,setDark] = useState(true);
+  const [tab,setTab] = useState('overview');
+  const [price,setPrice] = useState(null);
+  const [block,setBlock] = useState(null);
+  const [searchQ,setSearchQ] = useState('');
+  const [showModal,setShowModal] = useState(false);
+
+  // Fetch price + block
+  const refresh = useCallback(async()=>{
+    try{ const p=await api.tonPrice(); if(p) setPrice(p); }catch{}
+    try{ const b=await api.masterchain(); setBlock({last:b.last,init:b.init}); }catch{}
+  },[]);
+
+  useEffect(()=>{
+    refresh();
+    const iv=setInterval(refresh,15000);
+    return ()=>clearInterval(iv);
+  },[]);
+
+  const handleSearch=(q)=>{ setSearchQ(q); setShowModal(true); };
+
+  return (
+    <div className={dark?'dark':''}>
+      <div className="min-h-screen bg-slate-950 text-slate-200">
+        <TopBar dark={dark} setDark={setDark}/>
+        <Header onSearch={handleSearch}/>
+        <Navbar activeTab={tab} setActiveTab={setTab}/>
+
+        <main className="max-w-7xl mx-auto px-4 py-6">
+          {tab==='overview'    && <Overview price={price} block={block}/>}
+          {tab==='transactions'&& <TransactionsTab/>}
+          {tab==='blocks'      && <BlocksTab/>}
+          {tab==='jettons'     && <JettonsTab/>}
+          {tab==='nfts'        && <NFTsTab/>}
+          {tab==='validators'  && <ValidatorsTab/>}
+
+          <div className="mt-4 bg-ton-900/20 border border-ton-700/30 rounded-xl px-4 py-3 text-xs text-ton-300 flex items-start gap-2">
+            <span className="flex-shrink-0">ℹ️</span>
+            <p>All data is live from <span className="font-mono text-ton-400">toncenter.com/api/v2</span> + <span className="font-mono text-ton-400">tonapi.io/v2</span>. Free API tier has rate limits — if data fails to load, wait 10 seconds and refresh. For unlimited access get an API key from TonCenter.</p>
+          </div>
+        </main>
+
+        <Footer/>
+        <AIChatbot/>
+        {showModal&&<SearchModal query={searchQ} onClose={()=>setShowModal(false)}/>}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
